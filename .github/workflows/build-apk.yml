@@ -19,14 +19,18 @@ jobs:
   build:
     name: Compilar APK Matibatidos RC6
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
+
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
-      # 1. Descargar el repositorio
+      # 1. Descargar repositorio
       - name: Descargar repositorio
         uses: actions/checkout@v4
 
-      # 2. Configurar Java 17 sin caché
+      # 2. Configurar Java 17
       - name: Configurar Java 17
         uses: actions/setup-java@v4
         with:
@@ -38,7 +42,7 @@ jobs:
           java -version
           echo "JAVA_HOME=$JAVA_HOME"
 
-      # 3. Verificar y extraer el proyecto RC6
+      # 3. Verificar y extraer proyecto RC6
       - name: Verificar y extraer proyecto RC6
         shell: bash
         run: |
@@ -49,7 +53,6 @@ jobs:
 
           if [ ! -f "$ZIP_FILE" ]; then
             echo "::error::No se encontró $ZIP_FILE en la raíz del repositorio."
-            echo "Archivos disponibles:"
             ls -la
             exit 1
           fi
@@ -58,10 +61,8 @@ jobs:
 
           rm -rf "$PROJECT_DIR"
           mkdir -p "$PROJECT_DIR"
-
           unzip -q "$ZIP_FILE" -d "$PROJECT_DIR"
 
-          # Comprobar estructura del proyecto
           test -f "$PROJECT_DIR/settings.gradle"
           test -f "$PROJECT_DIR/build.gradle"
           test -f "$PROJECT_DIR/app/build.gradle"
@@ -70,10 +71,9 @@ jobs:
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Proyecto extraído correctamente."
-          find "$PROJECT_DIR" -maxdepth 2 -type f | head -60
+          echo "Proyecto RC6 extraído correctamente."
 
-      # 4. Comprobar configuración de Firebase y Gradle
+      # 4. Validar Firebase y Gradle
       - name: Validar configuración del proyecto
         shell: bash
         run: |
@@ -81,31 +81,31 @@ jobs:
 
           python3 - <<'PY'
           import json
+          import os
           from pathlib import Path
 
-          root = Path(__import__("os").environ["PROJECT_DIR"])
-
+          root = Path(os.environ["PROJECT_DIR"])
           config = root / "app/google-services.json"
+
           with config.open(encoding="utf-8") as f:
               data = json.load(f)
 
-          expected_package = "com.matibatidos.pos.rc6"
+          expected = "com.matibatidos.pos.rc6"
 
-          clients = data.get("client", [])
           packages = [
               c.get("client_info", {})
                .get("android_client_info", {})
                .get("package_name")
-              for c in clients
+              for c in data.get("client", [])
           ]
 
-          if expected_package not in packages:
+          if expected not in packages:
               raise SystemExit(
-                  "ERROR: google-services.json no contiene el paquete "
-                  + expected_package
+                  "ERROR: El paquete de Firebase no coincide: "
+                  + expected
               )
 
-          print("Firebase: paquete Android correcto.")
+          print("Firebase: paquete correcto.")
           PY
 
           grep -q "com.matibatidos.pos.rc6" "$PROJECT_DIR/app/build.gradle"
@@ -113,9 +113,9 @@ jobs:
           grep -q "com.google.gms.google-services" "$PROJECT_DIR/app/build.gradle"
           grep -q "firebase-messaging" "$PROJECT_DIR/app/build.gradle"
 
-          echo "Configuración Gradle y Firebase validada."
+          echo "Configuración del proyecto validada."
 
-      # 5. Preparar recursos utilizados por la aplicación
+      # 5. Preparar bibliotecas web
       - name: Preparar bibliotecas web
         shell: bash
         run: |
@@ -135,25 +135,46 @@ jobs:
           test -s "$ASSETS/xlsx.full.min.js"
           test -s "$ASSETS/chart.umd.min.js"
 
-          echo "Bibliotecas descargadas correctamente."
+      # 6. Configurar SDK Android manualmente
+      - name: Configurar SDK Android
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      # 6. Configurar Android SDK
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
+          SDK="$ANDROID_SDK_ROOT"
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
 
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::No se encontró sdkmanager en $SDKMANAGER"
+            find "$SDK/cmdline-tools" -maxdepth 3 -name sdkmanager
+            exit 1
+          fi
+
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+          "$SDKMANAGER" --version
+
+          echo "Android SDK encontrado correctamente."
+
+      # 7. Aceptar licencias e instalar componentes
       - name: Instalar componentes Android
         shell: bash
         run: |
           set -euo pipefail
 
-          sdkmanager --install \
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
+          yes | "$SDKMANAGER" --licenses || true
+
+          "$SDKMANAGER" --install \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-          yes | sdkmanager --licenses >/dev/null || true
+          echo "Componentes Android instalados."
 
-      # 7. Configurar Gradle 8.9 sin caché
+      # 8. Configurar Gradle 8.9 sin caché
       - name: Configurar Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -163,8 +184,8 @@ jobs:
       - name: Verificar Gradle
         run: gradle --version
 
-      # 8. Compilar aplicación
-      - name: Compilar APK RC6
+      # 9. Compilar APK
+      - name: Compilar APK Matibatidos RC6
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
@@ -172,8 +193,8 @@ jobs:
 
           gradle --no-daemon --stacktrace clean assembleDebug
 
-      # 9. Verificar APK generado
-      - name: Verificar APK
+      # 10. Verificar APK
+      - name: Verificar APK generado
         id: apk
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
@@ -183,19 +204,19 @@ jobs:
           APK="app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "::error::No se generó el APK esperado."
+            echo "::error::No se generó el APK."
             exit 1
           fi
 
-          echo "APK generado correctamente."
           ls -lh "$APK"
 
           SHA256=$(sha256sum "$APK" | awk '{print $1}')
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
 
+          echo "APK verificado correctamente."
           echo "SHA256: $SHA256"
 
-      # 10. Publicar APK para descargar
+      # 11. Publicar APK
       - name: Publicar APK Matibatidos
         uses: actions/upload-artifact@v4
         with:
@@ -204,10 +225,12 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # 12. Resultado
       - name: Resultado de compilación
         run: |
           echo "Compilación finalizada."
           echo "Java: 17"
           echo "Gradle: 8.9"
-          echo "Firebase: integrado en el proyecto"
+          echo "Android SDK: API 35"
+          echo "Firebase: configuración verificada."
           echo "SHA256: ${{ steps.apk.outputs.sha256 }}"
